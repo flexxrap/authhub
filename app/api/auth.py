@@ -14,8 +14,9 @@ from app.core.security import (
     hash_token,
     verify_password,
 )
-from app.db.models import RefreshToken, User
+from app.db.models import Notification, RefreshToken, User
 from app.db.session import get_db
+from app.workers.queue import enqueue_notification
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -44,8 +45,19 @@ async def register(data: UserCreate, db: AsyncSession = Depends(get_db)):
 
     user = User(email=data.email, hashed_password=hash_password(data.password))
     db.add(user)
+    await db.flush()
+
+    notification = Notification(
+        user_id=user.id,
+        kind="welcome",
+        payload={"message": f"Welcome to AuthHub, {user.email}!"},
+    )
+    db.add(notification)
     await db.commit()
     await db.refresh(user)
+    await db.refresh(notification)
+
+    await enqueue_notification(notification.id)
     return user
 
 

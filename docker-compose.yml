@@ -40,5 +40,17 @@ services:
       - ./alembic:/code/alembic
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
+  worker:
+    build: .
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./app:/code/app
+    command: python -m app.workers.notification_worker
+
 volumes:
   postgres_data:

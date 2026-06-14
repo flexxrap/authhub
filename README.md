@@ -8,7 +8,7 @@ queue. Built as a standalone backend service that other projects can call.
 
 - [x] Phase 1 - Core auth (register/login/refresh/logout, JWT, PostgreSQL)
 - [x] Phase 2 - Rate limiting via Redis
-- [ ] Phase 3 - Async notifications via queue
+- [x] Phase 3 - Async notifications via queue
 - [ ] Phase 4 - CI/CD + final docs
 
 ## Stack
@@ -36,6 +36,7 @@ Migrations run automatically on container start (`alembic upgrade head`).
 | POST   | `/auth/refresh`  | -          | Exchange a refresh token for a new pair |
 | POST   | `/auth/logout`   | -          | Revoke a refresh token               |
 | GET    | `/users/me`      | Bearer token | Get the current user               |
+| GET    | `/notifications/{id}/status` | Bearer token | Check delivery status of a notification |
 | GET    | `/health`        | -          | Health check                         |
 
 ## Tokens
@@ -60,6 +61,40 @@ until the window resets).
 retry) while making password-guessing attacks impractical - this is brute-force
 protection, not a general API rate limit.
 
+## Notifications
+
+On registration, a `welcome` notification row is created (`status=pending`)
+and its id is pushed onto a Redis list (`notifications:queue`). A separate
+`worker` process pops ids with `BRPOP` and "sends" the notification, then
+updates its status to `sent` or `failed`.
+
+```mermaid
+flowchart LR
+    User -->|POST /auth/register| API[FastAPI app]
+    API -->|create Notification row, status=pending| DB[(PostgreSQL)]
+    API -->|LPUSH notification id| Queue[(Redis list: notifications:queue)]
+    Worker[Notification worker] -->|BRPOP| Queue
+    Worker -->|update status: sent/failed| DB
+    Worker -->|send| Channel[Telegram Bot API or log]
+```
+
+**Why a plain Redis list instead of arq:** a list with `LPUSH`/`BRPOP` is a
+FIFO queue in two commands, needs no extra dependency or job-registration
+boilerplate, and is trivial to inspect/mock in tests (fakeredis). `arq` adds
+real value once you need retries, scheduling or multiple job types - overkill
+for a single "send welcome message" task.
+
+**Sending the notification:** `app/workers/senders.py` defines an abstract
+`NotificationSender` with one method, `send()`. `TelegramSender` posts to the
+Telegram Bot API (`sendMessage`) using `httpx`; `LogSender` just logs the
+message. The worker picks `TelegramSender` if `TELEGRAM_BOT_TOKEN` and
+`TELEGRAM_CHAT_ID` are set, otherwise falls back to `LogSender` - so the demo
+works without any real credentials, and a new channel (email, webhook, ...)
+is just another `NotificationSender` implementation.
+
+Check delivery status with `GET /notifications/{id}/status` (requires the
+owner's access token).
+
 ## Running tests
 
 Tests need a running Postgres. Either run them inside the app container:
@@ -77,5 +112,4 @@ DATABASE_URL=postgresql+asyncpg://authhub:authhub@localhost:5432/authhub pytest
 
 ## What's next
 
-- **Phase 3** - queue-based notifications (welcome message on registration)
 - **Phase 4** - CI/CD, final docs, architecture diagram

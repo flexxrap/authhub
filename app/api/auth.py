@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.schemas import LoginRequest, RefreshRequest, TokenPair, UserCreate, UserOut
 from app.core.config import settings
+from app.core.rate_limit import rate_limit
 from app.core.security import (
     create_access_token,
     generate_refresh_token,
@@ -30,7 +31,12 @@ async def _issue_tokens(user: User, db: AsyncSession) -> TokenPair:
     return TokenPair(access_token=access_token, refresh_token=refresh_token)
 
 
-@router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register",
+    response_model=UserOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit)],
+)
 async def register(data: UserCreate, db: AsyncSession = Depends(get_db)):
     existing = await db.scalar(select(User).where(User.email == data.email))
     if existing:
@@ -43,7 +49,7 @@ async def register(data: UserCreate, db: AsyncSession = Depends(get_db)):
     return user
 
 
-@router.post("/login", response_model=TokenPair)
+@router.post("/login", response_model=TokenPair, dependencies=[Depends(rate_limit)])
 async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
     user = await db.scalar(select(User).where(User.email == data.email))
     if not user or not verify_password(data.password, user.hashed_password):

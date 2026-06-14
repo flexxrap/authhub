@@ -7,7 +7,7 @@ queue. Built as a standalone backend service that other projects can call.
 ## Status
 
 - [x] Phase 1 - Core auth (register/login/refresh/logout, JWT, PostgreSQL)
-- [ ] Phase 2 - Rate limiting via Redis
+- [x] Phase 2 - Rate limiting via Redis
 - [ ] Phase 3 - Async notifications via queue
 - [ ] Phase 4 - CI/CD + final docs
 
@@ -48,6 +48,18 @@ Migrations run automatically on container start (`alembic upgrade head`).
   7 days). `/auth/refresh` rotates it: a new pair is issued and the old
   refresh token is marked `revoked`.
 
+## Rate limiting
+
+`/auth/login` and `/auth/register` are limited to **5 requests/minute per IP**,
+tracked in Redis with a simple `INCR` + `EXPIRE` counter (key
+`ratelimit:{path}:{ip}`). Each endpoint has its own counter. Exceeding the
+limit returns `429 Too Many Requests` with a `Retry-After` header (seconds
+until the window resets).
+
+5/min is enough for normal use (a couple of failed logins, a registration
+retry) while making password-guessing attacks impractical - this is brute-force
+protection, not a general API rate limit.
+
 ## Running tests
 
 Tests need a running Postgres. Either run them inside the app container:
@@ -65,6 +77,5 @@ DATABASE_URL=postgresql+asyncpg://authhub:authhub@localhost:5432/authhub pytest
 
 ## What's next
 
-- **Phase 2** - Redis-based rate limiting on `/auth/login` and `/auth/register`
 - **Phase 3** - queue-based notifications (welcome message on registration)
 - **Phase 4** - CI/CD, final docs, architecture diagram

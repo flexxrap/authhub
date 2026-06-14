@@ -1,5 +1,9 @@
 # AuthHub
 
+[![CI](https://github.com/flexxrap/authhub/actions/workflows/ci.yml/badge.svg)](https://github.com/flexxrap/authhub/actions/workflows/ci.yml)
+![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 A reusable authentication + notifications microservice: JWT access/refresh
 tokens, Redis-backed rate limiting, and async notification delivery via a
 queue. Built as a standalone backend service that other projects can call.
@@ -9,12 +13,36 @@ queue. Built as a standalone backend service that other projects can call.
 - [x] Phase 1 - Core auth (register/login/refresh/logout, JWT, PostgreSQL)
 - [x] Phase 2 - Rate limiting via Redis
 - [x] Phase 3 - Async notifications via queue
-- [ ] Phase 4 - CI/CD + final docs
+- [x] Phase 4 - CI/CD + final docs
 
 ## Stack
 
 Python 3.12, FastAPI, PostgreSQL (SQLAlchemy 2.0 async + asyncpg), Alembic,
-Redis, pytest + pytest-asyncio, Docker.
+Redis, pytest + pytest-asyncio, Docker, GitHub Actions, Ruff.
+
+## Architecture
+
+```mermaid
+flowchart TB
+    Client[Client / other service]
+
+    subgraph AuthHub
+        API[FastAPI app]
+        Worker[Notification worker]
+    end
+
+    Postgres[(PostgreSQL)]
+    Redis[(Redis)]
+    Channel[Telegram Bot API / log]
+
+    Client -->|REST + JWT| API
+    API --> Postgres
+    API -->|rate limit counters| Redis
+    API -->|enqueue notifications| Redis
+    Worker -->|BRPOP| Redis
+    Worker --> Postgres
+    Worker --> Channel
+```
 
 ## Quick start
 
@@ -38,6 +66,38 @@ Migrations run automatically on container start (`alembic upgrade head`).
 | GET    | `/users/me`      | Bearer token | Get the current user               |
 | GET    | `/notifications/{id}/status` | Bearer token | Check delivery status of a notification |
 | GET    | `/health`        | -          | Health check                         |
+
+### Examples
+
+```bash
+# register
+curl -X POST localhost:8000/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email": "user@example.com", "password": "password123"}'
+
+# login -> access_token + refresh_token
+curl -X POST localhost:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "user@example.com", "password": "password123"}'
+
+# refresh -> new token pair, old refresh token revoked
+curl -X POST localhost:8000/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token": "<refresh_token>"}'
+
+# logout -> revoke a refresh token
+curl -X POST localhost:8000/auth/logout \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token": "<refresh_token>"}'
+
+# current user
+curl localhost:8000/users/me \
+  -H "Authorization: Bearer <access_token>"
+
+# notification status
+curl localhost:8000/notifications/1/status \
+  -H "Authorization: Bearer <access_token>"
+```
 
 ## Tokens
 
@@ -110,6 +170,46 @@ docker-compose:
 DATABASE_URL=postgresql+asyncpg://authhub:authhub@localhost:5432/authhub pytest
 ```
 
-## What's next
+## Using AuthHub from other projects
 
-- **Phase 4** - CI/CD, final docs, architecture diagram
+AuthHub is meant to be a shared auth backend - other services point users at
+it for register/login and then check requests against it. Two ways to do
+that:
+
+- **Remote check (simplest):** forward the client's bearer token to
+  `GET /users/me`. A `200` means the token is valid and you get the user back;
+  a `401` means reject the request.
+
+  ```python
+  import httpx
+
+  async def get_authhub_user(token: str) -> dict | None:
+      async with httpx.AsyncClient(base_url="http://authhub:8000") as client:
+          resp = await client.get("/users/me", headers={"Authorization": f"Bearer {token}"})
+          return resp.json() if resp.status_code == 200 else None
+  ```
+
+- **Local check (faster):** decode the JWT yourself with the same
+  `JWT_SECRET_KEY` (PyJWT, `HS256`) - no network call, but the secret must be
+  shared between services.
+
+Example: a Telegram ops bot ("InfraBot") could require `/login` against
+AuthHub before running infra commands, then call `/users/me` (or decode the
+JWT) on every command to confirm the chat is tied to an authenticated user
+before executing anything.
+
+## What I'd improve next
+
+- **Email verification** - confirm ownership of the email before activating
+  an account.
+- **OAuth2 / social login** - Google and GitHub login as an alternative to
+  password auth.
+- **Refresh token reuse detection** - rotation already revokes the old token;
+  the next step is flagging reuse of a revoked token as a possible token theft
+  and revoking the whole token family.
+- **Prometheus metrics** - request counts/latencies and queue depth
+  (`/metrics` endpoint).
+
+## License
+
+MIT - see [LICENSE](LICENSE).
